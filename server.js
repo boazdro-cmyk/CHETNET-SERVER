@@ -16,6 +16,7 @@ const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'data.json');
+const MAX_FILE_BYTES = 3 * 1024 * 1024; // ~3MB raw file size cap (keeps data.json manageable on Render's free disk)
 
 // ---------------- Persistence ----------------
 function loadDB() {
@@ -87,7 +88,7 @@ const server = http.createServer((req, res) => {
   res.end('Kesher chat relay is running.');
 });
 
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ server, maxPayload: 6 * 1024 * 1024 });
 
 wss.on('connection', (sock) => {
   sock.name = null;
@@ -105,7 +106,7 @@ wss.on('connection', (sock) => {
 
       const isNewUser = !Object.keys(db.users).some(u => u.toLowerCase() === name.toLowerCase());
       if (isNewUser) {
-        db.users[name] = { joinedAt: Date.now() };
+        db.users[name] = { joinedAt: Date.now(), avatar: null };
         saveDB();
         broadcastAll({ type: 'usersUpdate', users: Object.keys(db.users) }, sock);
       }
@@ -117,10 +118,14 @@ wss.on('connection', (sock) => {
       set.add(sock);
       if (!wasOnline) broadcastAll({ type: 'presence', name, online: true }, sock);
 
+      const avatars = {};
+      for (const [uname, udata] of Object.entries(db.users)) avatars[uname.toLowerCase()] = udata.avatar || null;
+
       sendJson(sock, {
         type: 'welcome',
         name,
         users: Object.keys(db.users),
+        avatars,
         online: [...socketsByName.keys()],
         contacts: db.contacts[name.toLowerCase()],
         groups: groupsFor(name),
@@ -153,6 +158,14 @@ wss.on('connection', (sock) => {
         sendJson(sock, { type: 'contacts', contacts: list });
         break;
       }
+      case 'setAvatar': {
+        const avatar = String(msg.avatar || '').trim().slice(0, 8) || null;
+        if (!db.users[me]) db.users[me] = { joinedAt: Date.now(), avatar: null };
+        db.users[me].avatar = avatar;
+        saveDB();
+        broadcastAll({ type: 'avatarUpdate', name: me, avatar });
+        break;
+      }
       case 'createGroup': {
         const name = String(msg.name || 'Group').trim().slice(0, 40);
         const members = Array.from(new Set([me, ...(Array.isArray(msg.members) ? msg.members : [])]));
@@ -177,8 +190,22 @@ wss.on('connection', (sock) => {
       case 'send': {
         const scope = msg.scope;
         const text = String(msg.text || '').trim().slice(0, 4000);
-        if (!text) return;
-        const message = { from: me, text, ts: Date.now() };
+        let file = null;
+        if (msg.file && typeof msg.file.data === 'string') {
+          const approxBytes = msg.file.data.length * 0.75; // base64 -> raw estimate
+          if (approxBytes > MAX_FILE_BYTES) {
+            sendJson(sock, { type: 'error', reason: 'הקובץ גדול מדי (מקסימום 3MB).' });
+            return;
+          }
+          file = {
+            name: String(msg.file.name || 'file').slice(0, 120),
+            mime: String(msg.file.mime || 'application/octet-stream').slice(0, 100),
+            size: msg.file.size || null,
+            data: msg.file.data
+          };
+        }
+        if (!text && !file) return;
+        const message = { from: me, text, ts: Date.now(), file };
 
         if (scope === 'global') {
           db.messages.global = capMessages([...db.messages.global, message]);
@@ -203,7 +230,17 @@ wss.on('connection', (sock) => {
         break;
       }
       case 'ping': sendJson(sock, { type: 'pong' }); break;
-      default: break;
+      default: {
+        // Generic passthrough for WebRTC call signaling: call-invite, call-accept,
+        // call-decline, call-roster, call-signal, call-end. Server just relays to
+        // msg.to (a single username), always stamping the authenticated sender name.
+        if (typeof msg.type === 'string' && msg.type.indexOf('call-') === 0) {
+          const to = String(msg.to || '').trim();
+          if (!to) return;
+          sendTo(to, Object.assign({}, msg, { from: me }));
+        }
+        break;
+      }
     }
   });
 
