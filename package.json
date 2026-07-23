@@ -1,0 +1,15 @@
+{
+  "name": "kesher-chat-server",
+  "version": "1.0.0",
+  "description": "Persistent WebSocket chat relay: username-only login, contacts, groups, DMs, and a global chat.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
