@@ -111,14 +111,17 @@ wss.on('connection', (sock) => {
       }
       if (!db.contacts[name.toLowerCase()]) db.contacts[name.toLowerCase()] = [];
 
+      const wasOnline = socketsByName.has(name.toLowerCase());
       let set = socketsByName.get(name.toLowerCase());
       if (!set) { set = new Set(); socketsByName.set(name.toLowerCase(), set); }
       set.add(sock);
+      if (!wasOnline) broadcastAll({ type: 'presence', name, online: true }, sock);
 
       sendJson(sock, {
         type: 'welcome',
         name,
         users: Object.keys(db.users),
+        online: [...socketsByName.keys()],
         contacts: db.contacts[name.toLowerCase()],
         groups: groupsFor(name),
         conversations: conversationsFor(name)
@@ -207,7 +210,13 @@ wss.on('connection', (sock) => {
   sock.on('close', () => {
     if (sock.name) {
       const set = socketsByName.get(sock.name.toLowerCase());
-      if (set) { set.delete(sock); if (set.size === 0) socketsByName.delete(sock.name.toLowerCase()); }
+      if (set) {
+        set.delete(sock);
+        if (set.size === 0) {
+          socketsByName.delete(sock.name.toLowerCase());
+          broadcastAll({ type: 'presence', name: sock.name, online: false });
+        }
+      }
     }
   });
 });
